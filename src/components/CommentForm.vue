@@ -1,84 +1,151 @@
 <template>
-  <form @submit.prevent="onSubmit" class="box" novalidate>
-    <div class="field is-horizontal">
-      <div class="field-body">
-        <div class="field">
-          <label class="label">Name</label>
-          <div class="control">
-            <input class="input" v-model.trim="name" :class="{ 'is-danger': submitted && !name }" placeholder="Your name" />
-          </div>
-          <p v-if="submitted && !name" class="help is-danger">Name is required</p>
-        </div>
-        <div class="field">
-          <label class="label">Email</label>
-          <div class="control">
-            <input class="input" type="email" v-model.trim="email" :class="{ 'is-danger': submitted && !validEmail }" placeholder="you@example.com" />
-          </div>
-          <p v-if="submitted && !validEmail" class="help is-danger">Valid email is required</p>
-        </div>
+  <form @submit.prevent="handleSubmit" class="box">
+    <h3 class="title is-5">Add a comment</h3>
+
+    <!-- Nome -->
+    <div class="field">
+      <label class="label">Name</label>
+      <div class="control">
+        <input
+          class="input"
+          type="text"
+          v-model.trim="name"
+          placeholder="Your name"
+          :class="{ 'is-danger': submitted && !name }"
+        />
       </div>
+      <p v-if="submitted && !name" class="help is-danger">Name is required</p>
     </div>
 
+    <!-- Email -->
+    <div class="field">
+      <label class="label">Email</label>
+      <div class="control">
+        <input
+          class="input"
+          type="email"
+          v-model.trim="email"
+          placeholder="Your email"
+          :class="{ 'is-danger': submitted && !email }"
+        />
+      </div>
+      <p v-if="submitted && !email" class="help is-danger">Email is required</p>
+    </div>
+
+    <!-- Comentário -->
     <div class="field">
       <label class="label">Comment</label>
       <div class="control">
+        <!-- ⚠️ Corrigido: <textarea> precisa de fechamento -->
         <textarea
           class="textarea"
           v-model.trim="body"
-          :class="{ 'is-danger': submitted && !body }"
           placeholder="Write your comment..."
+          :class="{ 'is-danger': submitted && !body }"
+        ></textarea>
       </div>
-      <p v-if="submitted && !body" class="help is-danger">Comment is required</p>
+      <p v-if="submitted && !body" class="help is-danger">Comment text is required</p>
     </div>
 
-    <div class="buttons">
-      <button class="button is-success" :class="{ 'is-loading': isSubmitting }" type="submit">Submit</button>
-      <button class="button" type="button" @click="onClear">Clear</button>
+    <!-- Botões -->
+    <div class="field is-grouped mt-4">
+      <div class="control">
+        <button
+          class="button is-link"
+          type="submit"
+          :class="{ 'is-loading': loading }"
+        >
+          Submit
+        </button>
+      </div>
+      <div class="control">
+        <button
+          class="button is-light"
+          type="button"
+          @click="clearForm"
+        >
+          Clear
+        </button>
+      </div>
     </div>
 
-    <Notification v-if="error" :message="error" @close="error = ''" />
+    <p v-if="error" class="notification is-danger mt-4">
+      Failed to add comment. Please try again.
+    </p>
   </form>
 </template>
 
-<script setup>
-import { ref, computed } from 'vue';
-import Notification from './Notification.vue';
+<script>
+import { ref } from 'vue';
+import { createComment } from '../api';
 
-const props = defineProps({ postId: { type: Number, required: true } });
-const emit = defineEmits(['submitted']);
+export default {
+  name: 'CommentForm',
+  props: {
+    postId: { type: Number, required: true },
+  },
+  emits: ['comment-added'],
+  setup(props, { emit }) {
+    const name = ref('');
+    const email = ref('');
+    const body = ref('');
+    const submitted = ref(false);
+    const loading = ref(false);
+    const error = ref(false);
 
-const name = ref(localStorage.getItem('comment_name') || '');
-const email = ref(localStorage.getItem('comment_email') || '');
-const body = ref('');
-const submitted = ref(false);
-const isSubmitting = ref(false);
-const error = ref('');
+    const clearForm = () => {
+      name.value = '';
+      email.value = '';
+      body.value = '';
+      error.value = false;
+      submitted.value = false;
+    };
 
-const validEmail = computed(() => /.+@.+\..+/.test(email.value));
+    const handleSubmit = async () => {
+      submitted.value = true;
+      error.value = false;
 
-function onClear() {
-  name.value = '';
-  email.value = '';
-  body.value = '';
-  error.value = '';
-  submitted.value = false;
-}
+      if (!name.value || !email.value || !body.value) {
+        return;
+      }
 
-async function onSubmit() {
-  submitted.value = true;
-  if (!name.value || !validEmail.value || !body.value) return;
-  try {
-    isSubmitting.value = true;
-    await emit('submitted', { name: name.value, email: email.value, body: body.value });
-    localStorage.setItem('comment_name', name.value);
-    localStorage.setItem('comment_email', email.value);
-    body.value = '';
-    error.value = '';
-  } catch (e) {
-    error.value = 'Failed to add a comment. Please retry.';
-    throw e;
-  } finally {
-    isSubmitting.value = false;
-  }
-}
+      try {
+        loading.value = true;
+        const newComment = await createComment({
+          postId: props.postId,
+          name: name.value,
+          email: email.value,
+          body: body.value,
+        });
+        emit('comment-added', newComment);
+
+        // Após sucesso: mantém nome e email, limpa apenas o texto
+        body.value = '';
+        submitted.value = false;
+      } catch {
+        error.value = true;
+      } finally {
+        loading.value = false;
+      }
+    };
+
+    return {
+      name,
+      email,
+      body,
+      submitted,
+      loading,
+      error,
+      clearForm,
+      handleSubmit,
+    };
+  },
+};
 </script>
+
+<style scoped>
+.box {
+  max-width: 600px;
+  margin: 0 auto;
+}
+</style>
