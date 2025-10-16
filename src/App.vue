@@ -1,324 +1,291 @@
+<script setup>
+import { ref, onMounted } from 'vue'
+import PostForm from '@/components/PostForm.vue'
+import PostPreview from '@/components/PostPreview.vue'
+import {
+  fetchPosts,
+  fetchPost,
+  fetchComments,
+  createPost,
+} from '@/services/api'
+
+// ----- Estado: coluna esquerda (lista + criação) -----
+const left = ref({
+  isCreating: false,   // controla loading do <PostForm>
+  loading: false,      // loading da tabela de posts
+  posts: [],           // lista de posts
+  error: null,         // erro ao carregar posts
+})
+
+// ----- Estado: coluna direita (detalhe do post) -----
+const right = ref({
+  loading: false,          // loader da área direita (header/placeholder)
+  post: null,              // post selecionado
+  comments: [],            // comentários do post
+  commentsLoading: false,  // loader da lista de comentários
+  error: null,             // erro do painel direito
+})
+
+// ----- Carregamento inicial da lista de posts -----
+async function loadPosts() {
+  left.value.loading = true
+  left.value.error = null
+  try {
+    const data = await fetchPosts()
+    left.value.posts = Array.isArray(data) ? data : []
+  } catch (e) {
+    left.value.error = e
+    console.error('Falha ao carregar posts:', e)
+  } finally {
+    left.value.loading = false
+  }
+}
+
+// ----- Seleção de um post na lista -----
+async function selectPost(postId) {
+  await loadRightPane(postId)
+}
+
+// ----- Carregar painel direito (post + comments) -----
+async function loadRightPane(postId) {
+  right.value.loading = true
+  right.value.error = null
+  try {
+    right.value.post = await fetchPost(postId)
+
+    right.value.commentsLoading = true
+    right.value.comments = await fetchComments(postId)
+  } catch (e) {
+    right.value.error = e
+    console.error('Falha ao carregar painel direito:', e)
+  } finally {
+    right.value.commentsLoading = false
+    right.value.loading = false
+  }
+}
+
+// ----- Criação de post (usado pelo <PostForm :on-submit>) -----
+// JSONPlaceholder não persiste novos posts (ids > 100 dão 404 no GET),
+// então aqui nós atualizamos apenas o estado local e NÃO refetchamos.
+async function onCreatePost(payload) {
+  left.value.isCreating = true
+  try {
+    const created = await createPost(payload)
+    // Prepend na lista
+    left.value.posts = [created, ...left.value.posts]
+    // Seleciona localmente no painel direito (sem GET /posts/:id)
+    right.value.post = created
+    right.value.comments = []
+    right.value.commentsLoading = false
+    right.value.loading = false
+    return created
+  } catch (e) {
+    console.error('Erro ao criar post:', e)
+    throw e
+  } finally {
+    left.value.isCreating = false
+  }
+}
+
+// ----- Recebe evento de add-comment do PostPreview -----
+async function onAddComment(createdFromChild) {
+  if (!right.value.post) {
+    console.warn('Ignorando add-comment: post ausente')
+    return
+  }
+  right.value.comments = [...right.value.comments, createdFromChild]
+}
+
+// ----- Montagem -----
+onMounted(async () => {
+  await loadPosts()
+  if (left.value.posts.length > 0) {
+    await selectPost(left.value.posts[0].id)
+  }
+})
+</script>
+
 <template>
-  <section class="section">
-    <div class="container">
-      <div class="is-flex is-justify-content-space-between is-align-items-center mb-4">
-        <h1 class="title">Vue Dynamic Posts</h1>
-        <div class="tags has-addons">
-          <span class="tag is-dark">User</span>
-          <span class="tag is-info">{{ store.currentUser ? store.currentUser.name : 'User #' + store.currentUserId }}</span>
-        </div>
-      </div>
+  <main class="layout">
+    <!-- COLUNA ESQUERDA -->
+    <aside class="left">
+      <section class="card">
+        <h2 class="card-title">Novo Post</h2>
+        <PostForm
+          :on-submit="onCreatePost"
+          :loading="left.isCreating"
+          @error="e => console.error('Erro ao criar post:', e)"
+          @submitted="p => console.log('Post criado', p)"
+        />
+      </section>
 
-      <div class="Layout">
-        <div>
-          <PostTable
-            :posts="store.posts"
-            :loading="store.postsLoading"
-            :error="store.postsError"
-            @create="openCreate()"
-            @select="openPreview($event)"
-            @edit="openEdit($event)"
-            @delete="onDeletePost($event)"
-            @clear-error="store.postsError = ''"
-          />
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">Posts</h2>
+          <span v-if="left.loading" class="badge">Carregando…</span>
         </div>
 
-        <Sidebar :isOpen="sidebarOpen">
-          <Loader v-if="right.loading" />
-          <template v-else>
-            <PostForm
-              v-if="right.mode === 'create' || right.mode === 'edit'"
-              :isEdit="right.mode === 'edit'"
-              :modelValue="right.post"
-              :error="right.error"
-              @submit="right.mode === 'create' ? submitCreate : submitEdit"
-              @cancel="closeSidebar"
-              @delete="confirmDeleteInEdit"
-              @clear-error="right.error = ''"
-            />
+        <div v-if="left.error" class="error">
+          Falha ao carregar posts. <code>{{ String(left.error?.message || left.error) }}</code>
+        </div>
 
-            <PostPreview
-              v-else-if="right.mode === 'preview' && right.post"
-              :post="right.post"
-              :comments="right.comments"
-              :comments-loading="right.commentsLoading"
-              :comments-error="right.commentsError"
-              :show-comment-form="right.showCommentForm"
-              @edit="openEdit(right.post.id)"
-              @delete="onDeletePost(right.post.id)"
-              @delete-comment="onDeleteComment"
-              @toggle-comment-form="right.showCommentForm = true"
-              @add-comment="onAddComment"
-              @clear-comments-error="right.commentsError = ''"
-            />
+        <div v-else>
+          <table class="posts-table">
+            <thead>
+              <tr>
+                <th style="width: 72px;">ID</th>
+                <th>Título</th>
+                <th style="width: 140px;">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="p in left.posts"
+                :key="p.id"
+                :class="{ selected: right.post?.id === p.id }"
+              >
+                <td>#{{ p.id }}</td>
+                <td>{{ p.title }}</td>
+                <td class="actions">
+                  <button @click="selectPost(p.id)" :disabled="right.loading">
+                    Ver
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!left.loading && left.posts.length === 0">
+                <td colspan="3" class="muted">Nenhum post encontrado.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </aside>
 
-            <p v-else class="has-text-grey">Choose a post or create a new one.</p>
-          </template>
-        </Sidebar>
+    <!-- COLUNA DIREITA -->
+    <section class="right">
+      <div v-if="right.loading" class="sidebar-loader">Carregando…</div>
+
+      <div v-if="right.error" class="error">
+        Falha ao carregar o painel direito.
+        <code>{{ String(right.error?.message || right.error) }}</code>
       </div>
-    </div>
-  </section>
+
+      <PostPreview
+        v-if="right.post"
+        :post="right.post"
+        :comments="right.comments"
+        :comments-loading="right.commentsLoading"
+        @add-comment="onAddComment"
+      />
+
+      <div v-else-if="!right.loading" class="placeholder">
+        Selecione um post à esquerda para visualizar detalhes.
+      </div>
+    </section>
+  </main>
 </template>
 
-<script setup>
-import { onMounted, reactive, computed } from 'vue';
-import { store } from './store';
-import PostTable from './components/PostTable.vue';
-import Sidebar from './components/Sidebar.vue';
-import PostForm from './components/PostForm.vue';
-import PostPreview from './components/PostPreview.vue';
-import Loader from './components/Loader.vue';
-import {
-  fetchUsers,
-  fetchUserPosts,
-  fetchPost,
-  createPost,
-  updatePost,
-  deletePost,
-  fetchComments,
-  createComment,
-  deleteComment,
-} from './api';
+<style>
+/* Layout base */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 2fr;
+  gap: 1rem;
+  padding: 1rem;
+  align-items: start;
+}
 
-const right = reactive({
-  mode: '', // '', 'create', 'edit', 'preview'
-  loading: false,
-  post: null,
-  error: '',
-  comments: [],
-  commentsLoading: false,
-  commentsError: '',
-  showCommentForm: false,
-});
+/* Cards */
+.card {
+  background: #fff;
+  border: 1px solid #e6e6e6;
+  border-radius: .75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 1px 2px rgba(0,0,0,.03);
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  justify-content: space-between;
+  margin-bottom: .75rem;
+}
+.card-title {
+  margin: 0;
+  font-size: 1.1rem;
+}
 
-const sidebarOpen = computed(
-  () => right.mode === 'create' || right.mode === 'edit' || right.mode === 'preview'
-);
+/* Badges & estados */
+.badge {
+  font-size: .85rem;
+  padding: .2rem .5rem;
+  border-radius: .5rem;
+  background: #f2f2f2;
+}
+.error {
+  margin-top: .5rem;
+  padding: .75rem;
+  border: 1px solid #ffd6d6;
+  background: #fff5f5;
+  color: #8a1f1f;
+  border-radius: .5rem;
+}
+.placeholder {
+  padding: 1rem;
+  color: #777;
+}
 
-onMounted(async () => {
-  await init();
-});
+/* Tabela de posts */
+.posts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .95rem;
+}
+.posts-table th,
+.posts-table td {
+  border-bottom: 1px solid #eee;
+  padding: .5rem .4rem;
+  text-align: left;
+}
+.posts-table tr.selected {
+  background: #f7fbff;
+}
+.posts-table .actions {
+  display: flex;
+  gap: .5rem;
+}
 
-async function init() {
-  try {
-    const [users] = await Promise.all([fetchUsers()]);
-    store.users = users;
-    await loadPosts();
-  } catch (e) {
-    store.postsError = 'Failed to initialize.';
+/* Sidebar direita */
+.sidebar-loader {
+  padding: .6rem .8rem;
+  margin-bottom: .75rem;
+  border: 1px dashed #d9d9d9;
+  border-radius: .5rem;
+  color: #666;
+}
+
+/* Botões básicos */
+button {
+  appearance: none;
+  border: 1px solid #dcdcdc;
+  background: #fafafa;
+  padding: .4rem .7rem;
+  border-radius: .5rem;
+  cursor: pointer;
+}
+button:hover {
+  background: #f3f3f3;
+}
+button:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Responsivo */
+@media (max-width: 960px) {
+  .layout {
+    grid-template-columns: 1fr;
   }
 }
-
-async function loadPosts() {
-  store.postsLoading = true;
-  store.postsError = '';
-  try {
-    store.posts = await fetchUserPosts(store.currentUserId);
-  } catch (e) {
-    store.postsError = 'Failed to load posts.';
-  } finally {
-    store.postsLoading = false;
-  }
-}
-
-function openCreate() {
-  right.mode = 'create';
-  right.post = { title: '', body: '' };
-  right.error = '';
-  right.showCommentForm = false;
-}
-
-/**
- * PREVIEW IMEDIATO DO POST + COMENTÁRIOS EM BACKGROUND
- */
-async function openPreview(postId) {
-  // UI imediata com dados em cache (da tabela)
-  const cached = store.posts.find(p => p.id === postId) || null;
-  right.mode = 'preview';
-  right.error = '';
-  right.showCommentForm = false;
-  right.post = cached; // aparece instantaneamente
-  store.selectedPostId = postId;
-
-  // Comentários: loader apenas na seção de comentários
-  right.comments = [];
-  right.commentsLoading = true;
-  right.commentsError = '';
-
-  // Em background, tenta refrescar os detalhes do post (não trava UI)
-  (async () => {
-    try {
-      const fresh = await fetchPost(postId);
-      if (right.mode === 'preview' && right.post && right.post.id === postId) {
-        right.post = fresh;
-      }
-    } catch {
-      /* silencioso */
-    }
-  })();
-
-  try {
-    const comments = await fetchComments(postId);
-    if (right.mode === 'preview' && right.post && right.post.id === postId) {
-      right.comments = comments;
-    }
-  } catch {
-    right.commentsError = 'CommentsError: failed to load comments.';
-  } finally {
-    right.commentsLoading = false;
-  }
-}
-
-/**
- * EDIÇÃO IMEDIATA + REFRESH EM BACKGROUND
- */
-async function openEdit(postId) {
-  // UI imediata com cache
-  right.mode = 'edit';
-  right.error = '';
-  const cached = store.posts.find(p => p.id === postId) || null;
-  right.post = cached ? { ...cached } : null; // clone para edição
-  store.selectedPostId = postId;
-
-  // Em background, busca versão mais nova (sem travar o formulário)
-  (async () => {
-    try {
-      const fresh = await fetchPost(postId);
-      if (right.mode === 'edit' && right.post && right.post.id === postId) {
-        right.post = { ...fresh };
-      }
-    } catch {
-      /* silencioso */
-    }
-  })();
-}
-
-/**
- * CRIAÇÃO OTIMISTA:
- * - mostra preview imediatamente com ID temporário
- * - cria no servidor em background
- * - sincroniza ID/dados quando a API responde
- * - carrega comentários (normalmente vazio) em background
- */
-async function submitCreate(values) {
-  right.error = '';
-
-  // Post temporário para UI imediata
-  const tempId = Date.now();
-  const optimisticPost = {
-    id: tempId,
-    userId: store.currentUserId,
-    title: values.title,
-    body: values.body,
-  };
-
-  // Atualiza UI imediatamente
-  store.posts = [optimisticPost, ...store.posts];
-  right.post = optimisticPost;
-  right.mode = 'preview';
-  store.selectedPostId = tempId;
-  right.comments = [];
-  right.commentsLoading = false;
-  right.commentsError = '';
-  right.showCommentForm = false;
-
-  try {
-    // Cria no servidor (background)
-    const created = await createPost({
-      userId: store.currentUserId,
-      title: values.title,
-      body: values.body,
-    });
-
-    // Sincroniza ID e dados retornados
-    store.posts = store.posts.map(p => (p.id === tempId ? { ...p, ...created } : p));
-    if (right.post && right.post.id === tempId) {
-      right.post = { ...optimisticPost, ...created };
-      store.selectedPostId = created.id;
-    }
-
-    // Carrega comentários do novo post (geralmente vazio)
-    right.commentsLoading = true;
-    try {
-      right.comments = await fetchComments(created.id);
-    } catch {
-      right.commentsError = 'CommentsError: failed to load comments.';
-    } finally {
-      right.commentsLoading = false;
-    }
-  } catch {
-    // Erro: reverte UI e informa
-    store.posts = store.posts.filter(p => p.id !== tempId);
-    if (right.post && right.post.id === tempId) {
-      right.mode = '';
-      right.post = null;
-    }
-    right.error = 'Failed to create post.';
-  }
-}
-
-async function submitEdit(values) {
-  right.error = '';
-  try {
-    const updated = await updatePost(right.post.id, values);
-    // Atualiza na tabela
-    store.posts = store.posts.map(p => (p.id === updated.id ? { ...p, ...updated } : p));
-    // Mostra preview
-    right.post = { ...right.post, ...updated };
-    right.mode = 'preview';
-  } catch (e) {
-    right.error = 'Failed to save post.';
-  }
-}
-
-async function onDeletePost(postId) {
-  // Otimista: remove da lista e fecha sidebar se for o post aberto
-  const prevPosts = [...store.posts];
-  store.posts = store.posts.filter(p => p.id !== postId);
-  if (right.post?.id === postId) closeSidebar();
-
-  try {
-    await deletePost(postId);
-  } catch (e) {
-    // Rollback em caso de erro
-    store.posts = prevPosts;
-    alert('Failed to delete the post. Please retry.');
-  }
-}
-
-function confirmDeleteInEdit() {
-  if (right.post) onDeletePost(right.post.id);
-}
-
-function closeSidebar() {
-  right.mode = '';
-  right.post = null;
-  right.error = '';
-  right.comments = [];
-  right.commentsError = '';
-  right.showCommentForm = false;
-}
-
-async function onAddComment(payload) {
-  try {
-    const created = await createComment({ postId: right.post.id, ...payload });
-    right.comments.push(created);
-  } catch (e) {
-    right.commentsError = 'Failed to add comment. Click "Write a comment" again to retry.';
-    throw e;
-  }
-}
-
-async function onDeleteComment(comment) {
-  // Otimista
-  const prev = [...right.comments];
-  right.comments = right.comments.filter(c => c.id !== comment.id);
-  try {
-    await deleteComment(comment.id);
-  } catch (e) {
-    right.comments = prev;
-    right.commentsError = 'Failed to delete comment. Please retry.';
-  }
-}
-</script>
-``
+</style>
