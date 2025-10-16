@@ -22,7 +22,11 @@
     <div class="field">
       <label class="label">Comment</label>
       <div class="control">
-        <textarea class="textarea" v-model.trim="body" :class="{ 'is-danger': submitted && !body }" placeholder="Write your comment..." />
+        <textarea
+          class="textarea"
+          v-model.trim="body"
+          :class="{ 'is-danger': submitted && !body }"
+          placeholder="Write your comment..."
       </div>
       <p v-if="submitted && !body" class="help is-danger">Comment is required</p>
     </div>

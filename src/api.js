@@ -1,8 +1,14 @@
 import axios from 'axios';
 
-export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://jsonplaceholder.typicode.com';
+// Requisito: usar Mate API como base
+// Se quiser permitir troca via .env, mantenha a linha abaixo.
+// Caso contrário, troque diretamente para a string fixa.
+export const BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'https://mate-academy.github.io/fe-students-api';
+
 const api = axios.create({ baseURL: BASE_URL, timeout: 12000 });
 
+// Endpoints padrão do exercício (Mate API mantém /users, /posts, /comments)
 export async function fetchUsers() {
   const { data } = await api.get('/users');
   return data;
@@ -34,7 +40,7 @@ export async function deletePost(postId) {
 }
 
 export async function fetchComments(postId) {
-  const { data } = await api.get(`/comments`, { params: { postId } });
+  const { data } = await api.get('/comments', { params: { postId } });
   return data;
 }
 

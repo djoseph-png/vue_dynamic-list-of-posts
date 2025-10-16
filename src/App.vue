@@ -91,7 +91,9 @@ const right = reactive({
   showCommentForm: false,
 });
 
-const sidebarOpen = computed(() => right.mode === 'create' || right.mode === 'edit' || right.mode === 'preview');
+const sidebarOpen = computed(
+  () => right.mode === 'create' || right.mode === 'edit' || right.mode === 'preview'
+);
 
 onMounted(async () => {
   await init();
@@ -99,9 +101,7 @@ onMounted(async () => {
 
 async function init() {
   try {
-    const [users] = await Promise.all([
-      fetchUsers(),
-    ]);
+    const [users] = await Promise.all([fetchUsers()]);
     store.users = users;
     await loadPosts();
   } catch (e) {
@@ -128,59 +128,131 @@ function openCreate() {
   right.showCommentForm = false;
 }
 
+/**
+ * PREVIEW IMEDIATO DO POST + COMENTÁRIOS EM BACKGROUND
+ */
 async function openPreview(postId) {
-  right.loading = true;
+  // UI imediata com dados em cache (da tabela)
+  const cached = store.posts.find(p => p.id === postId) || null;
   right.mode = 'preview';
   right.error = '';
   right.showCommentForm = false;
+  right.post = cached; // aparece instantaneamente
+  store.selectedPostId = postId;
+
+  // Comentários: loader apenas na seção de comentários
+  right.comments = [];
+  right.commentsLoading = true;
+  right.commentsError = '';
+
+  // Em background, tenta refrescar os detalhes do post (não trava UI)
+  (async () => {
+    try {
+      const fresh = await fetchPost(postId);
+      if (right.mode === 'preview' && right.post && right.post.id === postId) {
+        right.post = fresh;
+      }
+    } catch {
+      /* silencioso */
+    }
+  })();
+
   try {
-    const [post] = await Promise.all([
-      fetchPost(postId),
-    ]);
-    right.post = post;
-    store.selectedPostId = postId;
-    await loadComments(postId);
-  } catch (e) {
-    right.error = 'Failed to open post.';
+    const comments = await fetchComments(postId);
+    if (right.mode === 'preview' && right.post && right.post.id === postId) {
+      right.comments = comments;
+    }
+  } catch {
+    right.commentsError = 'CommentsError: failed to load comments.';
   } finally {
-    right.loading = false;
+    right.commentsLoading = false;
   }
 }
 
+/**
+ * EDIÇÃO IMEDIATA + REFRESH EM BACKGROUND
+ */
 async function openEdit(postId) {
-  right.loading = true;
+  // UI imediata com cache
   right.mode = 'edit';
   right.error = '';
-  try {
-    const post = await fetchPost(postId);
-    right.post = { ...post };
-    store.selectedPostId = postId;
-  } catch (e) {
-    right.error = 'Failed to load post for editing.';
-  } finally {
-    right.loading = false;
-  }
+  const cached = store.posts.find(p => p.id === postId) || null;
+  right.post = cached ? { ...cached } : null; // clone para edição
+  store.selectedPostId = postId;
+
+  // Em background, busca versão mais nova (sem travar o formulário)
+  (async () => {
+    try {
+      const fresh = await fetchPost(postId);
+      if (right.mode === 'edit' && right.post && right.post.id === postId) {
+        right.post = { ...fresh };
+      }
+    } catch {
+      /* silencioso */
+    }
+  })();
 }
 
-function closeSidebar() {
-  right.mode = '';
-  right.post = null;
-  right.error = '';
-  right.comments = [];
-  right.commentsError = '';
-  right.showCommentForm = false;
-}
-
+/**
+ * CRIAÇÃO OTIMISTA:
+ * - mostra preview imediatamente com ID temporário
+ * - cria no servidor em background
+ * - sincroniza ID/dados quando a API responde
+ * - carrega comentários (normalmente vazio) em background
+ */
 async function submitCreate(values) {
   right.error = '';
+
+  // Post temporário para UI imediata
+  const tempId = Date.now();
+  const optimisticPost = {
+    id: tempId,
+    userId: store.currentUserId,
+    title: values.title,
+    body: values.body,
+  };
+
+  // Atualiza UI imediatamente
+  store.posts = [optimisticPost, ...store.posts];
+  right.post = optimisticPost;
+  right.mode = 'preview';
+  store.selectedPostId = tempId;
+  right.comments = [];
+  right.commentsLoading = false;
+  right.commentsError = '';
+  right.showCommentForm = false;
+
   try {
-    const newPost = await createPost({ userId: store.currentUserId, ...values });
-    store.posts = [newPost, ...store.posts];
-    right.post = newPost;
-    right.mode = 'preview';
-    store.selectedPostId = newPost.id;
-    right.comments = [];
-  } catch (e) {
+    // Cria no servidor (background)
+    const created = await createPost({
+      userId: store.currentUserId,
+      title: values.title,
+      body: values.body,
+    });
+
+    // Sincroniza ID e dados retornados
+    store.posts = store.posts.map(p => (p.id === tempId ? { ...p, ...created } : p));
+    if (right.post && right.post.id === tempId) {
+      right.post = { ...optimisticPost, ...created };
+      store.selectedPostId = created.id;
+    }
+
+    // Carrega comentários do novo post (geralmente vazio)
+    right.commentsLoading = true;
+    try {
+      right.comments = await fetchComments(created.id);
+    } catch {
+      right.commentsError = 'CommentsError: failed to load comments.';
+    } finally {
+      right.commentsLoading = false;
+    }
+  } catch {
+    // Erro: reverte UI e informa
+    store.posts = store.posts.filter(p => p.id !== tempId);
+    if (right.post && right.post.id === tempId) {
+      right.mode = '';
+      right.post = null;
+    }
     right.error = 'Failed to create post.';
   }
 }
@@ -189,7 +261,9 @@ async function submitEdit(values) {
   right.error = '';
   try {
     const updated = await updatePost(right.post.id, values);
-    store.posts = store.posts.map(p => p.id === updated.id ? { ...p, ...updated } : p);
+    // Atualiza na tabela
+    store.posts = store.posts.map(p => (p.id === updated.id ? { ...p, ...updated } : p));
+    // Mostra preview
     right.post = { ...right.post, ...updated };
     right.mode = 'preview';
   } catch (e) {
@@ -198,6 +272,7 @@ async function submitEdit(values) {
 }
 
 async function onDeletePost(postId) {
+  // Otimista: remove da lista e fecha sidebar se for o post aberto
   const prevPosts = [...store.posts];
   store.posts = store.posts.filter(p => p.id !== postId);
   if (right.post?.id === postId) closeSidebar();
@@ -205,6 +280,7 @@ async function onDeletePost(postId) {
   try {
     await deletePost(postId);
   } catch (e) {
+    // Rollback em caso de erro
     store.posts = prevPosts;
     alert('Failed to delete the post. Please retry.');
   }
@@ -214,16 +290,13 @@ function confirmDeleteInEdit() {
   if (right.post) onDeletePost(right.post.id);
 }
 
-async function loadComments(postId) {
-  right.commentsLoading = true;
+function closeSidebar() {
+  right.mode = '';
+  right.post = null;
+  right.error = '';
+  right.comments = [];
   right.commentsError = '';
-  try {
-    right.comments = await fetchComments(postId);
-  } catch (e) {
-    right.commentsError = 'CommentsError: failed to load comments.';
-  } finally {
-    right.commentsLoading = false;
-  }
+  right.showCommentForm = false;
 }
 
 async function onAddComment(payload) {
@@ -237,6 +310,7 @@ async function onAddComment(payload) {
 }
 
 async function onDeleteComment(comment) {
+  // Otimista
   const prev = [...right.comments];
   right.comments = right.comments.filter(c => c.id !== comment.id);
   try {
@@ -247,3 +321,4 @@ async function onDeleteComment(comment) {
   }
 }
 </script>
+``
